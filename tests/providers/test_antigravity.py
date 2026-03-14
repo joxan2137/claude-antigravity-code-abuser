@@ -192,7 +192,7 @@ def test_convert_content_thinking_blocks():
 
 def test_convert_content_tool_use():
     """Tool use blocks are converted to functionCall."""
-    content = [
+    tool_use_content = [
         {
             "type": "tool_use",
             "id": "toolu_123",
@@ -200,7 +200,19 @@ def test_convert_content_tool_use():
             "input": {"path": "test.py"},
         },
     ]
-    req = MockRequest(messages=[MockMessage("assistant", content)])
+    tool_result_content = [
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_123",
+            "content": "result",
+        },
+    ]
+    req = MockRequest(
+        messages=[
+            MockMessage("assistant", tool_use_content),
+            MockMessage("user", tool_result_content),
+        ]
+    )
     result = convert_anthropic_to_google(req)
 
     parts = result["contents"][0]["parts"]
@@ -209,19 +221,33 @@ def test_convert_content_tool_use():
     assert parts[0]["functionCall"]["args"] == {"path": "test.py"}
 
 
+
 def test_convert_content_tool_result():
     """Tool result blocks are converted to functionResponse."""
-    content = [
+    tool_use_content = [
+        {
+            "type": "tool_use",
+            "id": "toolu_123",
+            "name": "read_file",
+            "input": {"path": "test.py"},
+        },
+    ]
+    tool_result_content = [
         {
             "type": "tool_result",
             "tool_use_id": "toolu_123",
             "content": "File contents here",
         },
     ]
-    req = MockRequest(messages=[MockMessage("user", content)])
+    req = MockRequest(
+        messages=[
+            MockMessage("assistant", tool_use_content),
+            MockMessage("user", tool_result_content),
+        ]
+    )
     result = convert_anthropic_to_google(req)
 
-    parts = result["contents"][0]["parts"]
+    parts = result["contents"][1]["parts"]
     assert "functionResponse" in parts[0]
     assert parts[0]["functionResponse"]["name"] == "toolu_123"
     assert parts[0]["functionResponse"]["response"]["result"] == "File contents here"

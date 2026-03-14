@@ -295,22 +295,32 @@ class AntigravityProvider(BaseProvider):
         Multi-account mode: picks accounts, retries on 429/401.
         Single-token mode: tries the single token directly.
         """
+        if "options" in payload:
+            payload = payload.copy()
+            payload.pop("options", None)
+
         if not self._account_manager.has_accounts:
             # Single-token fallback
-            return await self._try_endpoints(self._api_key, payload)
+            try:
+                return await self._try_endpoints(self._api_key, payload)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (429, 503):
+                    logger.info(
+                        "Single token exhausted, falling back to premium credits"
+                    )
+                    payload["options"] = {"isCloudAiPremiumCredits": True}
+                    return await self._try_endpoints(self._api_key, payload)
+                raise
 
         max_attempts = min(MAX_ACCOUNT_RETRIES, self._account_manager.account_count + 1)
+        attempt = 0
 
         for attempt in range(max_attempts):
             account = self._account_manager.pick_account(model)
 
             if account is None:
                 if self._account_manager.all_rate_limited(model):
-                    wait = self._account_manager.get_min_wait_seconds(model)
-                    raise RuntimeError(
-                        f"All accounts rate-limited for {model}. "
-                        f"Next available in {wait:.0f}s"
-                    )
+                    break  # Break out to use premium credits below
                 raise RuntimeError("No accounts available")
 
             try:
@@ -342,6 +352,18 @@ class AntigravityProvider(BaseProvider):
                     )
                     continue
                 raise
+
+        # Premium fallback if we exhausted attempts or all are rate-limited
+        logger.info("Normal accounts exhausted. Falling back to premium credits...")
+        payload["options"] = {"isCloudAiPremiumCredits": True}
+
+        if self._account_manager._accounts:
+            fallback_account = self._account_manager._accounts[0]
+            try:
+                token = await fallback_account.get_access_token()
+                return await self._try_endpoints(token, payload)
+            except Exception as e:
+                logger.warning("Premium credits fallback failed: {}", e)
 
         raise RuntimeError(
             f"Exhausted all {max_attempts} retry attempts across accounts"
