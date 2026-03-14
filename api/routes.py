@@ -5,7 +5,7 @@ import traceback
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from config.settings import Settings
@@ -111,6 +111,42 @@ async def root(settings: Settings = Depends(get_settings)):
         "provider": settings.provider_type,
         "model": settings.model,
     }
+
+
+@router.get("/v1/models")
+async def list_models():
+    """Mock models endpoint for Desktop Claude compatibility."""
+    return JSONResponse(
+        content={
+            "data": [
+                {
+                    "type": "model",
+                    "id": "claude-3-7-sonnet-20250219",
+                    "display_name": "Claude 3.7 Sonnet",
+                    "created_at": "2025-02-19T00:00:00Z",
+                },
+                {
+                    "type": "model",
+                    "id": "claude-3-5-sonnet-20241022",
+                    "display_name": "Claude 3.5 Sonnet",
+                    "created_at": "2024-10-22T00:00:00Z",
+                },
+                {
+                    "type": "model",
+                    "id": "claude-3-opus-20240229",
+                    "display_name": "Claude 3 Opus",
+                    "created_at": "2024-02-29T00:00:00Z",
+                },
+                {
+                    "type": "model",
+                    "id": "claude-3-haiku-20240307",
+                    "display_name": "Claude 3 Haiku",
+                    "created_at": "2024-03-07T00:00:00Z",
+                },
+            ],
+            "has_more": False,
+        }
+    )
 
 
 @router.get("/health")

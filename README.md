@@ -12,7 +12,7 @@
 [![Code style: Ruff](https://img.shields.io/badge/code%20formatting-ruff-f5a623.svg?style=for-the-badge)](https://github.com/astral-sh/ruff)
 [![Logging: Loguru](https://img.shields.io/badge/logging-loguru-4ecdc4.svg?style=for-the-badge)](https://github.com/Delgan/loguru)
 
-A lightweight proxy that routes Claude Code's Anthropic API calls to **NVIDIA NIM** (40 req/min free), **OpenRouter** (hundreds of models), or **LM Studio** (fully local).
+A lightweight proxy that routes Claude Code's Anthropic API calls to **NVIDIA NIM** (40 req/min free), **OpenRouter** (hundreds of models), **LM Studio** (fully local), or **Antigravity** (Google Cloud Code - Claude & Gemini models).
 
 [Features](#features) · [Quick Start](#quick-start) · [How It Works](#how-it-works) · [Discord Bot](#discord-bot) · [Configuration](#configuration)
 
@@ -29,9 +29,9 @@ A lightweight proxy that routes Claude Code's Anthropic API calls to **NVIDIA NI
 
 | Feature                    | Description                                                                                                          |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Zero Cost**              | 40 req/min free on NVIDIA NIM. Free models on OpenRouter. Fully local with LM Studio                                 |
+| **Zero Cost**              | 40 req/min free on NVIDIA NIM. Free models on OpenRouter. Fully local with LM Studio. Antigravity via Google account |
 | **Drop-in Replacement**    | Set 2 env vars. No modifications to Claude Code CLI or VSCode extension needed                                       |
-| **3 Providers**            | NVIDIA NIM, OpenRouter (hundreds of models), LM Studio (local & offline)                                             |
+| **4 Providers**            | NVIDIA NIM, OpenRouter (hundreds of models), LM Studio (local & offline), Antigravity (Claude & Gemini via Google)   |
 | **Per-Model Mapping**      | Route Opus / Sonnet / Haiku requests to different models and providers. Mix providers freely per model               |
 | **Thinking Token Support** | Parses `<think>` tags and `reasoning_content` into native Claude thinking blocks                                     |
 | **Heuristic Tool Parser**  | Models outputting tool calls as text are auto-parsed into structured tool use                                        |
@@ -49,6 +49,7 @@ A lightweight proxy that routes Claude Code's Anthropic API calls to **NVIDIA NI
    - **NVIDIA NIM**: [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)
    - **OpenRouter**: [openrouter.ai/keys](https://openrouter.ai/keys)
    - **LM Studio**: No API key needed. Run locally with [LM Studio](https://lmstudio.ai)
+   - **Antigravity**: Google OAuth token from [Antigravity IDE](https://antigravity.google) or the [antigravity-claude-proxy](https://github.com/badrisnarayanan/antigravity-claude-proxy) OAuth flow
 2. Install [Claude Code](https://github.com/anthropics/claude-code)
 3. Install [uv](https://github.com/astral-sh/uv)
 4. Update uv if already installed: `uv self update`
@@ -105,6 +106,24 @@ MODEL="lmstudio/unsloth/GLM-4.7-Flash-GGUF"         # fallback
 </details>
 
 <details>
+<summary><b>Antigravity</b> (Google Cloud Code - Claude & Gemini models)</summary>
+
+⚠️ **Warning**: Using this may violate Google's ToS. Use a burner Google account.
+
+```dotenv
+ANTIGRAVITY_OAUTH_TOKEN="ya29.your-oauth-token-here"
+
+MODEL_OPUS="antigravity/claude-opus-4-5-thinking"
+MODEL_SONNET="antigravity/claude-sonnet-4-5-thinking"
+MODEL_HAIKU="antigravity/gemini-3-flash"
+MODEL="antigravity/claude-sonnet-4-5-thinking"       # fallback
+```
+
+Available models: `claude-sonnet-4-5-thinking`, `claude-opus-4-5-thinking`, `claude-sonnet-4-5`, `gemini-3-flash`, `gemini-3-pro-low`, `gemini-3-pro-high`
+
+</details>
+
+<details>
 <summary><b>Mix providers</b> (use multiple providers together)</summary>
 
 Each `MODEL_*` variable can use a different provider. `MODEL` is the fallback for unrecognized Claude models.
@@ -155,6 +174,50 @@ That's it! Claude Code now uses your configured provider for free.
 5. **If you see the login screen** ("How do you want to log in?"): Click **Anthropic Console**, then authorize. The extension will start working. You may be redirected to buy credits in the browser; ignore it, the extension already works.
 
 To switch back to Anthropic models, comment out the added block and reload extensions.
+
+</details>
+
+<details>
+<summary><b>Desktop Claude App Setup</b></summary>
+
+Start the proxy server, then launch the desktop app with the env vars:
+
+**Windows (PowerShell):**
+```powershell
+$env:ANTHROPIC_BASE_URL="http://localhost:8082"
+$env:ANTHROPIC_AUTH_TOKEN="freecc"
+& "$env:LOCALAPPDATA\AnthropicClaude\claude.exe"
+```
+
+**macOS:**
+```bash
+ANTHROPIC_BASE_URL="http://localhost:8082" ANTHROPIC_AUTH_TOKEN="freecc" open -a "Claude"
+```
+
+**Linux:**
+```bash
+ANTHROPIC_BASE_URL="http://localhost:8082" ANTHROPIC_AUTH_TOKEN="freecc" claude-desktop
+```
+
+</details>
+
+<details>
+<summary><b>Antigravity Multi-Account Management</b></summary>
+
+Add multiple Google accounts and the proxy will automatically rotate between them when one gets rate-limited.
+
+```bash
+# Run the account manager
+uv run manage_accounts.py
+```
+
+This opens an interactive menu to:
+- **Add accounts** via Google OAuth (opens browser for login)
+- **Add manual tokens** for quick testing
+- **Remove accounts**
+- **View status** (available, rate-limited, invalid)
+
+Accounts are stored in `~/.freecc/antigravity_accounts.json`. The proxy loads them automatically on startup and rotates between accounts when rate limits are hit.
 
 </details>
 

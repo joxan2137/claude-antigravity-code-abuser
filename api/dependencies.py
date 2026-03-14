@@ -5,6 +5,7 @@ from loguru import logger
 
 from config.settings import Settings
 from config.settings import get_settings as _get_settings
+from providers.antigravity import AntigravityProvider
 from providers.base import BaseProvider, ProviderConfig
 from providers.common import get_user_facing_error_message
 from providers.exceptions import AuthenticationError
@@ -69,13 +70,45 @@ def _create_provider_for_type(provider_type: str, settings: Settings) -> BasePro
             http_connect_timeout=settings.http_connect_timeout,
         )
         return LMStudioProvider(config)
+    if provider_type == "antigravity":
+        from pathlib import Path
+
+        from providers.antigravity import DEFAULT_ACCOUNTS_PATH
+
+        accounts_path = (
+            Path(settings.antigravity_accounts_path)
+            if settings.antigravity_accounts_path.strip()
+            else DEFAULT_ACCOUNTS_PATH
+        )
+        # Allow either multi-account JSON or single token
+        has_accounts = accounts_path.exists()
+        has_token = bool(
+            settings.antigravity_oauth_token
+            and settings.antigravity_oauth_token.strip()
+        )
+        if not has_accounts and not has_token:
+            raise AuthenticationError(
+                "Antigravity: No accounts configured. Either:\n"
+                "  1. Run 'uv run manage_accounts.py' to add Google accounts, or\n"
+                "  2. Set ANTIGRAVITY_OAUTH_TOKEN in your .env file."
+            )
+        config = ProviderConfig(
+            api_key=settings.antigravity_oauth_token if has_token else "",
+            rate_limit=settings.provider_rate_limit,
+            rate_window=settings.provider_rate_window,
+            max_concurrency=settings.provider_max_concurrency,
+            http_read_timeout=settings.http_read_timeout,
+            http_write_timeout=settings.http_write_timeout,
+            http_connect_timeout=settings.http_connect_timeout,
+        )
+        return AntigravityProvider(config, accounts_path=accounts_path)
     logger.error(
-        "Unknown provider_type: '{}'. Supported: 'nvidia_nim', 'open_router', 'lmstudio'",
+        "Unknown provider_type: '{}'. Supported: 'nvidia_nim', 'open_router', 'lmstudio', 'antigravity'",
         provider_type,
     )
     raise ValueError(
         f"Unknown provider_type: '{provider_type}'. "
-        f"Supported: 'nvidia_nim', 'open_router', 'lmstudio'"
+        f"Supported: 'nvidia_nim', 'open_router', 'lmstudio', 'antigravity'"
     )
 
 
