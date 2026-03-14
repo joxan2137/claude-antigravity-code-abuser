@@ -84,9 +84,15 @@ def _convert_content_to_parts(
         elif block_type == "tool_use":
             name = get_block_attr(block, "name", "")
             tool_input = get_block_attr(block, "input", {})
+            tool_id = get_block_attr(block, "id", "")
+            if not tool_id:
+                import uuid
+                tool_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                
             parts.append(
                 {
                     "functionCall": {
+                        "id": tool_id,
                         "name": name,
                         "args": tool_input if isinstance(tool_input, dict) else {},
                     }
@@ -107,7 +113,8 @@ def _convert_content_to_parts(
             parts.append(
                 {
                     "functionResponse": {
-                        "name": tool_use_id,
+                        "id": tool_use_id,
+                        "name": tool_use_id,  # fallback if they still expect it here
                         "response": {
                             "result": str(tool_content) if tool_content else ""
                         },

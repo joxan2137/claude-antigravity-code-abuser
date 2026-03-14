@@ -30,7 +30,7 @@ class ContentBlockImage(BaseModel):
 
 class ContentBlockToolUse(BaseModel):
     type: Literal["tool_use"]
-    id: str
+    id: str | None = None
     name: str
     input: dict[str, Any]
 

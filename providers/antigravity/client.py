@@ -318,14 +318,15 @@ class AntigravityProvider(BaseProvider):
                 return await self._try_endpoints(token, payload)
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
-                if status == 429:
+                if status in (429, 503):
                     reset_s = self._parse_reset_seconds(e)
                     self._account_manager.mark_rate_limited(
                         account.email, model, reset_s
                     )
                     logger.info(
-                        "ANTIGRAVITY_429: {} rate-limited, trying next account "
+                        "ANTIGRAVITY_{}: {} rate-limited/unavailable, trying next account "
                         "(attempt {}/{})",
+                        status,
                         account.email,
                         attempt + 1,
                         max_attempts,
@@ -381,8 +382,8 @@ class AntigravityProvider(BaseProvider):
                     response=response,
                 )
 
-                # For 429/401, raise immediately to trigger account rotation
-                if response.status_code in (401, 429):
+                # For 429/401/503, raise immediately to trigger account rotation
+                if response.status_code in (401, 429, 503):
                     raise last_error
 
             except httpx.HTTPStatusError:

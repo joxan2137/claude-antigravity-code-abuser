@@ -8,10 +8,6 @@ Implements the authorization code flow:
 """
 
 import asyncio
-
-# Public OAuth client credentials (same as all Antigravity proxies)
-# Base64 encoded to bypass GitHub native secret scanner (these are public, not sensitive)
-import base64
 import secrets
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -21,13 +17,11 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 from loguru import logger
 
-_B64_CLIENT_ID = (
-    b"MTA3MTAwNjA2" + b"MDU5MS10bWhzc" + b"2luMmgyMWxjcmU" + b"yMzV2dG9sb2po" + b"NGc0MDNlcC5hc" + b"HBzLmdvb2dsZX" + b"VzZXJjb250ZW" + b"50LmNvbQ=="
+# Public OAuth client credentials (same as all Antigravity proxies)
+OAUTH_CLIENT_ID = (
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 )
-_B64_CLIENT_SECRET = b"R09DU1" + b"BYLUs1O" + b"EZXUjQ" + b"4NkxkTE" + b"oxbUxCO" + b"HNYQzR" + b"6NnFEQ" + b"WY="
-
-OAUTH_CLIENT_ID = base64.b64decode(_B64_CLIENT_ID).decode("utf-8")
-OAUTH_CLIENT_SECRET = base64.b64decode(_B64_CLIENT_SECRET).decode("utf-8")
+OAUTH_CLIENT_SECRET = "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"
 OAUTH_CALLBACK_PORT = 51121
 OAUTH_REDIRECT_URI = f"http://localhost:{OAUTH_CALLBACK_PORT}/oauth-callback"
 
