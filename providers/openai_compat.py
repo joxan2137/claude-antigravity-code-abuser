@@ -119,6 +119,7 @@ class OpenAICompatibleProvider(BaseProvider):
         input_tokens: int = 0,
         *,
         request_id: str | None = None,
+        api_key: str | None = None,
     ) -> AsyncIterator[str]:
         """Stream response in Anthropic SSE format."""
         with logger.contextualize(request_id=request_id):
@@ -132,6 +133,7 @@ class OpenAICompatibleProvider(BaseProvider):
         request: Any,
         input_tokens: int,
         request_id: str | None,
+        api_key: str | None = None,
     ) -> AsyncIterator[str]:
         """Shared streaming implementation."""
         tag = self._provider_name

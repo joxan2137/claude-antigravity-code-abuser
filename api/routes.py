@@ -53,11 +53,14 @@ async def create_message(
         input_tokens = get_token_count(
             request_data.messages, request_data.system, request_data.tools
         )
+        api_key = raw_request.headers.get("x-api-key")
+
         return StreamingResponse(
             provider.stream_response(
                 request_data,
                 input_tokens=input_tokens,
                 request_id=request_id,
+                api_key=api_key,
             ),
             media_type="text/event-stream",
             headers={

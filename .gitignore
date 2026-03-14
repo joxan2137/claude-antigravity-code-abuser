@@ -9,3 +9,9 @@ agent_workspace
 .env
 server.log
 .coverage
+
+# Scratch & extracted files
+cloudcode_ext/
+*.vsix
+hit.txt
+show.txt

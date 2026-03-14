@@ -1,8 +1,9 @@
 """Tests for Antigravity Cloud Code provider."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from providers.antigravity import AntigravityProvider
@@ -219,7 +220,6 @@ def test_convert_content_tool_use():
     assert "functionCall" in parts[0]
     assert parts[0]["functionCall"]["name"] == "read_file"
     assert parts[0]["functionCall"]["args"] == {"path": "test.py"}
-
 
 
 def test_convert_content_tool_result():
@@ -497,3 +497,59 @@ async def test_cleanup(antigravity_config):
     with patch.object(p._client, "aclose", new_callable=AsyncMock) as mock_close:
         await p.cleanup()
         mock_close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_rotation_raises_when_all_rate_limited(tmp_path, antigravity_config):
+    """When all accounts are rate-limited the loop immediately raises."""
+    provider = AntigravityProvider(
+        antigravity_config, accounts_path=tmp_path / "no.json"
+    )
+    mgr = MagicMock()
+    mgr.has_accounts = True
+    mgr.account_count = 1
+
+    # pick_account returns None indicating all accounts rate limited
+    mgr.pick_account.return_value = None
+    mgr.get_min_wait_seconds.return_value = 2.0
+
+    provider._account_manager = mgr
+
+    with pytest.raises(RuntimeError, match="All accounts rate-limited for claude"):
+        await provider._try_stream_with_rotation({"project": "p"}, "claude")
+
+
+@pytest.mark.asyncio
+async def test_rotation_max_attempts_raises(tmp_path, antigravity_config):
+    """After max_attempts the loop gives up with a descriptive error."""
+    provider = AntigravityProvider(
+        antigravity_config, accounts_path=tmp_path / "no.json"
+    )
+
+    mgr = MagicMock()
+    mgr.has_accounts = True
+    mgr.account_count = 2
+
+    mock_account = MagicMock()
+    mock_account.email = "test@example.com"
+    mock_account.project_id = ""
+    mock_account.get_access_token = AsyncMock(return_value="tok")
+
+    mgr.pick_account.return_value = mock_account
+    mgr.get_min_wait_seconds.return_value = 30.0
+
+    provider._account_manager = mgr
+
+    with patch.object(provider, "_try_endpoints", new_callable=AsyncMock) as mock_try:
+        # always raise 429
+        err = httpx.HTTPStatusError(
+            "429 Too Many Requests",
+            request=MagicMock(),
+            response=MagicMock(status_code=429, headers={}, text=""),
+        )
+        mock_try.side_effect = err
+
+        with pytest.raises(RuntimeError, match="gave up after 5 attempts"):
+            await provider._try_stream_with_rotation({"project": "p"}, "claude")
+
+        assert mock_try.call_count == 5

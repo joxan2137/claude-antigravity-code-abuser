@@ -8,6 +8,9 @@ and streams responses via SSE.
 Supports multi-account mode with automatic rotation on rate limits
 (via accounts JSON managed by manage_accounts.py), or single-token
 mode via ANTIGRAVITY_OAUTH_TOKEN for backward compatibility.
+
+When ANTHROPIC_API_KEY is set, exhausted accounts automatically fall back
+to the real Anthropic API (Claude Pro subscription passthrough).
 """
 
 import json
@@ -31,26 +34,39 @@ from providers.rate_limit import GlobalRateLimiter
 from .account_manager import DEFAULT_ACCOUNTS_PATH, AccountManager
 from .request import build_cloudcode_request
 
+# Anthropic API endpoint for Claude Pro fallback
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_API_VERSION = "2023-06-01"
+
 # Antigravity Cloud Code API endpoints (in fallback order)
 ANTIGRAVITY_ENDPOINTS = [
     "https://daily-cloudcode-pa.googleapis.com",
     "https://cloudcode-pa.googleapis.com",
 ]
 
-# Required headers for Antigravity API
-_ANTIGRAVITY_HEADERS = {
-    "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-    "Client-Metadata": json.dumps(
-        {
-            "ideType": "IDE_UNSPECIFIED",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI",
-        }
-    ),
-}
+# Version string matching real Cloud Code extension
+_PLUGIN_VERSION = "0.1"
 
-# Max retry attempts across accounts
-MAX_ACCOUNT_RETRIES = 5
+
+def _build_client_metadata(project_id: str = "") -> str:
+    """Build Client-Metadata JSON matching the real Cloud Code extension.
+
+    The extension's buildClientMetadata() method returns:
+    {ideType, ideVersion, platform, pluginVersion, updateChannel,
+     duetProject, pluginType, ideName}
+    """
+    return json.dumps(
+        {
+            "ideType": "VSCODE",
+            "ideVersion": "1.100.0",
+            "platform": "WINDOWS_AMD64",
+            "pluginVersion": _PLUGIN_VERSION,
+            "updateChannel": "",
+            "duetProject": project_id,
+            "pluginType": "CLOUD_CODE",
+            "ideName": "Visual Studio Code",
+        }
+    )
 
 
 class AntigravityProvider(BaseProvider):
@@ -69,9 +85,11 @@ class AntigravityProvider(BaseProvider):
         self,
         config: ProviderConfig,
         accounts_path: str | Path = DEFAULT_ACCOUNTS_PATH,
+        anthropic_api_key: str = "",
     ):
         super().__init__(config)
         self._api_key = config.api_key  # Fallback single OAuth2 token
+        self._anthropic_api_key = anthropic_api_key
         self._global_rate_limiter = GlobalRateLimiter.get_instance(
             rate_limit=config.rate_limit,
             rate_window=config.rate_window,
@@ -98,20 +116,28 @@ class AntigravityProvider(BaseProvider):
         else:
             logger.info("ANTIGRAVITY: Single-token mode")
 
+        if self._anthropic_api_key:
+            logger.info("ANTIGRAVITY: Claude Pro fallback ENABLED")
+        else:
+            logger.info(
+                "ANTIGRAVITY: Claude Pro fallback disabled (no ANTHROPIC_API_KEY)"
+            )
+
     async def cleanup(self) -> None:
         """Release HTTP client resources."""
         if self._client is not None:
             await self._client.aclose()
 
     def _build_headers(
-        self, token: str, accept: str = "text/event-stream"
+        self, token: str, accept: str = "text/event-stream", project_id: str = ""
     ) -> dict[str, str]:
         """Build request headers with OAuth token."""
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "User-Agent": "antigravity/1.11.5 proxy/free-claude-code",
-            **_ANTIGRAVITY_HEADERS,
+            "User-Agent": f"antigravity/{_PLUGIN_VERSION} proxy/free-claude-code",
+            "X-Goog-Api-Client": f"google-cloud-sdk vscode_cloudshelleditor/{_PLUGIN_VERSION}",
+            "Client-Metadata": _build_client_metadata(project_id),
         }
         if accept != "application/json":
             headers["Accept"] = accept
@@ -123,11 +149,12 @@ class AntigravityProvider(BaseProvider):
         input_tokens: int = 0,
         *,
         request_id: str | None = None,
+        api_key: str | None = None,
     ) -> AsyncIterator[str]:
         """Stream response in Anthropic SSE format."""
         with logger.contextualize(request_id=request_id):
             async for event in self._stream_response_impl(
-                request, input_tokens, request_id
+                request, input_tokens, request_id, api_key
             ):
                 yield event
 
@@ -136,11 +163,18 @@ class AntigravityProvider(BaseProvider):
         request: Any,
         input_tokens: int,
         request_id: str | None,
+        api_key: str | None = None,
     ) -> AsyncIterator[str]:
-        """Core streaming implementation with multi-account retry."""
+        """Core streaming implementation with multi-account retry.
+
+        Falls back to direct Anthropic API if all accounts are exhausted
+        and an Anthropic API key is available (either from request or config).
+        """
         tag = "ANTIGRAVITY"
         message_id = f"msg_{uuid.uuid4()}"
         sse = SSEBuilder(message_id, request.model, input_tokens)
+
+        fallback_key = api_key or self._anthropic_api_key
 
         payload = build_cloudcode_request(request)
         model = payload.get("model", "unknown")
@@ -162,7 +196,25 @@ class AntigravityProvider(BaseProvider):
 
         async with self._global_rate_limiter.concurrency_slot():
             try:
-                response = await self._try_stream_with_rotation(payload, model)
+                try:
+                    response = await self._try_stream_with_rotation(payload, model)
+                except RuntimeError as e:
+                    if not fallback_key:
+                        raise
+                    # Fallback to Claude Pro API
+                    logger.warning(
+                        "ANTIGRAVITY_FALLBACK:{} all accounts exhausted, "
+                        "switching to direct Anthropic API: {}",
+                        req_tag,
+                        e,
+                    )
+                    for event in sse.close_all_blocks():
+                        yield event
+                    async for line in self._stream_anthropic_fallback(
+                        request, fallback_key
+                    ):
+                        yield line
+                    return
 
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -287,44 +339,130 @@ class AntigravityProvider(BaseProvider):
         yield sse.message_delta(finish_reason, output_tokens)
         yield sse.message_stop()
 
+    async def _stream_anthropic_fallback(
+        self, request: Any, fallback_key: str
+    ) -> AsyncIterator[str]:
+        """Fall back to the real Anthropic API (Claude Pro subscription).
+
+        Since the proxy input is already in Anthropic format and the
+        Anthropic API returns Anthropic SSE, this is a simple passthrough:
+        serialize the original request → POST to api.anthropic.com →
+        yield SSE lines unchanged.
+        """
+        # Exclude internal/proxy fields from the payload
+        body = request.model_dump(
+            exclude_none=True,
+            exclude={"extra_body", "original_model", "resolved_provider_model"},
+            by_alias=True,
+        )
+
+        # Ensure tools are formatted correctly
+        if hasattr(request, "tools") and request.tools:
+            body["tools"] = [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                }
+                for t in request.tools
+            ]
+
+        # Thinking / extended thinking
+        if hasattr(request, "thinking") and request.thinking:
+            body["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": request.thinking.budget_tokens,
+            }
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": fallback_key,
+            "Anthropic-Version": ANTHROPIC_API_VERSION,
+            "Accept": "text/event-stream",
+        }
+
+        logger.info(
+            "ANTHROPIC_FALLBACK: model={} msgs={}",
+            request.model,
+            len(body["messages"]),
+        )
+
+        response = await self._client.send(
+            self._client.build_request(
+                "POST",
+                ANTHROPIC_API_URL,
+                headers=headers,
+                content=json.dumps(body),
+            ),
+            stream=True,
+        )
+
+        if response.status_code != 200:
+            error_body = await response.aread()
+            error_text = error_body.decode("utf-8", errors="replace")
+            logger.error(
+                "ANTHROPIC_FALLBACK_ERROR: status={} error={}",
+                response.status_code,
+                error_text[:300],
+            )
+            raise RuntimeError(
+                f"Anthropic API error ({response.status_code}): {error_text[:200]}"
+            )
+
+        # Pipe SSE stream directly — already in Anthropic format
+        async for line in response.aiter_lines():
+            yield line + "\n"
+
     async def _try_stream_with_rotation(
         self, payload: dict, model: str
     ) -> httpx.Response:
-        """Try to stream with account rotation on rate limits.
+        """Try to stream and rotate through accounts on failure.
 
-        Multi-account mode: picks accounts, retries on 429/401.
-        Single-token mode: tries the single token directly.
+        Failure cases like 429/503/401 automatically rotate to the next account.
+        If all accounts are currently rate-limited, immediately falls back.
+
+        Single-token mode: tries the single token directly (no rotation).
         """
-        if "options" in payload:
-            payload = payload.copy()
-            payload.pop("options", None)
-
         if not self._account_manager.has_accounts:
-            # Single-token fallback
-            try:
-                return await self._try_endpoints(self._api_key, payload)
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code in (429, 503):
-                    logger.info(
-                        "Single token exhausted, falling back to premium credits"
-                    )
-                    payload["options"] = {"isCloudAiPremiumCredits": True}
-                    return await self._try_endpoints(self._api_key, payload)
-                raise
+            return await self._try_endpoints(self._api_key, payload)
 
-        max_attempts = min(MAX_ACCOUNT_RETRIES, self._account_manager.account_count + 1)
-        attempt = 0
+        max_attempts = max(5, self._account_manager.account_count * 2)
 
-        for attempt in range(max_attempts):
+        for attempt in range(1, max_attempts + 1):
             account = self._account_manager.pick_account(model)
 
             if account is None:
-                if self._account_manager.all_rate_limited(model):
-                    break  # Break out to use premium credits below
-                raise RuntimeError("No accounts available")
+                # All accounts are currently rate-limited or invalid.
+                wait = self._account_manager.get_min_wait_seconds(model)
+                logger.warning(
+                    "ANTIGRAVITY: all accounts rate-limited for {}, "
+                    "next available in {:.0f}s",
+                    model,
+                    wait,
+                )
+                raise RuntimeError(
+                    f"All accounts rate-limited for {model} — "
+                    f"Next account available in {wait:.0f}s."
+                )
+
+            if account.project_id:
+                payload["project"] = account.project_id
+            else:
+                from .request import DEFAULT_PROJECT_ID
+
+                payload["project"] = DEFAULT_PROJECT_ID
 
             try:
                 token = await account.get_access_token()
+            except Exception:
+                # get_access_token already called mark_invalid() — just rotate
+                logger.warning(
+                    "ANTIGRAVITY: {} token refresh failed, rotating account",
+                    account.email,
+                )
+                continue
+
+            try:
                 return await self._try_endpoints(token, payload)
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
@@ -334,12 +472,11 @@ class AntigravityProvider(BaseProvider):
                         account.email, model, reset_s
                     )
                     logger.info(
-                        "ANTIGRAVITY_{}: {} rate-limited/unavailable, trying next account "
-                        "(attempt {}/{})",
+                        "ANTIGRAVITY_{}: {} rate-limited, rotating account "
+                        "(attempt={})",
                         status,
                         account.email,
-                        attempt + 1,
-                        max_attempts,
+                        attempt,
                     )
                     continue
                 if status == 401:
@@ -347,31 +484,29 @@ class AntigravityProvider(BaseProvider):
                         account.email, f"Auth failed: {status}"
                     )
                     logger.warning(
-                        "ANTIGRAVITY_401: {} auth failed, trying next account",
+                        "ANTIGRAVITY_401: {} auth failed, rotating account",
                         account.email,
                     )
                     continue
                 raise
 
-        # Premium fallback if we exhausted attempts or all are rate-limited
-        logger.info("Normal accounts exhausted. Falling back to premium credits...")
-        payload["options"] = {"isCloudAiPremiumCredits": True}
-
-        if self._account_manager._accounts:
-            fallback_account = self._account_manager._accounts[0]
-            try:
-                token = await fallback_account.get_access_token()
-                return await self._try_endpoints(token, payload)
-            except Exception as e:
-                logger.warning("Premium credits fallback failed: {}", e)
-
+        # Max attempts exhausted
+        wait = self._account_manager.get_min_wait_seconds(model)
         raise RuntimeError(
-            f"Exhausted all {max_attempts} retry attempts across accounts"
+            f"All accounts rate-limited for {model} — "
+            f"gave up after {max_attempts} attempts. "
+            f"Next account available in {wait:.0f}s."
         )
 
     async def _try_endpoints(self, token: str, payload: dict) -> httpx.Response:
-        """Try each endpoint in fallback order, return first successful stream."""
-        headers = self._build_headers(token)
+        """Try each endpoint in fallback order, return first successful stream.
+
+        Rate-limit (429/503) and auth (401) errors are per-account, not
+        per-endpoint, so they are raised immediately for account rotation.
+        Only connection errors and non-critical HTTP errors (e.g. 400, 500)
+        trigger fallback to the next endpoint.
+        """
+        headers = self._build_headers(token, project_id=payload.get("project", ""))
         last_error: Exception | None = None
 
         for endpoint in ANTIGRAVITY_ENDPOINTS:
@@ -386,31 +521,8 @@ class AntigravityProvider(BaseProvider):
                     ),
                     stream=True,
                 )
-                if response.status_code == 200:
-                    return response
-
-                body = await response.aread()
-                error_text = body.decode("utf-8", errors="replace")
-                logger.warning(
-                    "ANTIGRAVITY_ENDPOINT_ERROR: {} status={} error={}",
-                    endpoint,
-                    response.status_code,
-                    error_text[:200],
-                )
-
-                last_error = httpx.HTTPStatusError(
-                    f"API error ({response.status_code}): {error_text[:200]}",
-                    request=response.request,
-                    response=response,
-                )
-
-                # For 429/401/503, raise immediately to trigger account rotation
-                if response.status_code in (401, 429, 503):
-                    raise last_error
-
-            except httpx.HTTPStatusError:
-                raise
             except Exception as e:
+                # Connection-level failure — try next endpoint
                 logger.warning(
                     "ANTIGRAVITY_CONNECT_ERROR: {} {}: {}",
                     endpoint,
@@ -418,6 +530,33 @@ class AntigravityProvider(BaseProvider):
                     e,
                 )
                 last_error = e
+                continue
+
+            if response.status_code == 200:
+                return response
+
+            body = await response.aread()
+            error_text = body.decode("utf-8", errors="replace")
+            logger.warning(
+                "ANTIGRAVITY_ENDPOINT_ERROR: {} status={} error={}",
+                endpoint,
+                response.status_code,
+                error_text[:200],
+            )
+
+            last_error = httpx.HTTPStatusError(
+                f"API error ({response.status_code}): {error_text[:200]}",
+                request=response.request,
+                response=response,
+            )
+
+            # Rate-limit (429/503) and auth (401) errors are per-account,
+            # not per-endpoint — raise immediately so account rotation in
+            # _try_stream_with_rotation can handle them properly.
+            if response.status_code in (401, 429, 503):
+                raise last_error
+
+            # Other HTTP errors (400, 500, etc.) — try next endpoint
 
         if last_error:
             raise last_error

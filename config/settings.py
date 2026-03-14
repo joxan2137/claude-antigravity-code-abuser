@@ -22,6 +22,9 @@ class Settings(BaseSettings):
         default="", validation_alias="ANTIGRAVITY_ACCOUNTS_PATH"
     )
 
+    # ==================== Anthropic API (Claude Pro fallback) ====================
+    anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+
     # ==================== Messaging Platform Selection ====================
     # Valid: "telegram" | "discord"
     messaging_platform: str = Field(

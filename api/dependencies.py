@@ -101,7 +101,11 @@ def _create_provider_for_type(provider_type: str, settings: Settings) -> BasePro
             http_write_timeout=settings.http_write_timeout,
             http_connect_timeout=settings.http_connect_timeout,
         )
-        return AntigravityProvider(config, accounts_path=accounts_path)
+        return AntigravityProvider(
+            config,
+            accounts_path=accounts_path,
+            anthropic_api_key=settings.anthropic_api_key,
+        )
     logger.error(
         "Unknown provider_type: '{}'. Supported: 'nvidia_nim', 'open_router', 'lmstudio', 'antigravity'",
         provider_type,
